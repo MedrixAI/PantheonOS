@@ -541,10 +541,31 @@ def _is_retryable_error(error: Exception) -> bool:
     if isinstance(error, (ServiceUnavailableError, InternalServerError,
                           RateLimitError, APIConnectionError)):
         return True
+    # Streaming SDKs can leak their underlying transport timeout instead of
+    # wrapping it in the provider's APIConnectionError.  A read timeout is
+    # transient (the same route often succeeds immediately afterwards), so it
+    # must enter the model retry loop rather than terminate the whole chat.
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+        return True
+    try:
+        import httpx
+
+        if isinstance(error, httpx.TimeoutException):
+            return True
+    except ImportError:
+        pass
+    try:
+        import httpcore
+
+        if isinstance(error, httpcore.TimeoutException):
+            return True
+    except ImportError:
+        pass
     # Fallback: string matching for common transient error indicators
     error_str = str(error).lower()
     return any(kw in error_str for kw in (
-        "overloaded", "rate", "capacity", "temporarily", "503", "502", "429",
+        "overloaded", "rate", "capacity", "temporarily", "timeout",
+        "timed out", "503", "502", "429",
     ))
 
 

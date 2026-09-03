@@ -6,6 +6,7 @@ and Anthropic's native format, and normalizes streaming events.
 """
 
 import json
+import os
 import time
 from typing import Any, Callable
 
@@ -89,6 +90,18 @@ def _normalize_user_content(content: Any) -> Any:
 
 def _wrap_anthropic_error(e: Exception) -> Exception:
     """Convert anthropic SDK exceptions to unified exception types."""
+    # The Anthropic streaming iterator may surface raw httpx transport errors
+    # after the response has started.  Normalize them before the generic agent
+    # retry classifier sees the exception.
+    try:
+        import httpx
+
+        if isinstance(e, httpx.TransportError):
+            detail = str(e) or type(e).__name__
+            return APIConnectionError(detail)
+    except ImportError:
+        pass
+
     try:
         import anthropic as anthropic_mod
 
@@ -313,11 +326,14 @@ class AnthropicAdapter(BaseAdapter):
         from anthropic import AsyncAnthropic
         import httpx
 
-        # Bound the request so a stalled endpoint fails fast (~120s) and lets
+        # Bound the request so a stalled endpoint eventually fails and lets
         # pantheon's own num_retries loop retry, instead of hanging on the SDK
-        # default (~600s). max_retries=0: don't also retry inside the SDK.
+        # default (~600s). Long cached prompts can legitimately take over two
+        # minutes to produce the first event, so use a configurable 180s
+        # default. max_retries=0: don't also retry inside the SDK.
+        read_timeout = float(os.getenv("PANTHEON_LLM_READ_TIMEOUT", "180"))
         kwargs = {
-            "timeout": httpx.Timeout(120.0, connect=10.0),
+            "timeout": httpx.Timeout(read_timeout, connect=10.0),
             "max_retries": 0,
         }
         if base_url:

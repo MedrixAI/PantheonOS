@@ -4,15 +4,42 @@ import random
 from pathlib import Path
 from typing import List
 
+import httpx
 from pydantic import BaseModel, Field
 
-from pantheon.agent import Agent, AgentRunContext, AgentTransfer, _RUN_CONTEXT, _call_agent
+from pantheon.agent import (
+    Agent,
+    AgentRunContext,
+    AgentTransfer,
+    _RUN_CONTEXT,
+    _call_agent,
+    _is_retryable_error,
+)
 from pantheon.internal.memory import Memory
+from pantheon.utils.adapters.anthropic_adapter import _wrap_anthropic_error
+from pantheon.utils.adapters.base import APIConnectionError
+from pantheon.utils.adapters.openai_adapter import _wrap_openai_error
 from pantheon.utils.tool_pairing import INCOMPLETE_TOOL_RESULT_PLACEHOLDER
 from pantheon.utils.llm_providers import ProviderConfig, ProviderType
 from pantheon.utils.vision import vision_input
 
 HERE = Path(__file__).parent
+
+
+def test_transport_timeouts_are_retryable():
+    assert _is_retryable_error(httpx.ReadTimeout("read timed out"))
+    assert _is_retryable_error(httpx.ConnectTimeout("connect timed out"))
+    assert _is_retryable_error(asyncio.TimeoutError())
+
+
+def test_provider_adapters_normalize_raw_httpx_timeouts():
+    anthropic_error = _wrap_anthropic_error(httpx.ReadTimeout(""))
+    openai_error = _wrap_openai_error(httpx.ReadTimeout(""))
+
+    assert isinstance(anthropic_error, APIConnectionError)
+    assert str(anthropic_error) == "ReadTimeout"
+    assert isinstance(openai_error, APIConnectionError)
+    assert str(openai_error) == "ReadTimeout"
 
 
 def test_sanitize_messages_repairs_tool_pairing_and_drops_orphans():

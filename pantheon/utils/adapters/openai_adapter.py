@@ -61,6 +61,17 @@ def _sanitize_tool_messages_for_chat_completions(messages: list[dict]) -> list[d
 
 def _wrap_openai_error(e: Exception) -> Exception:
     """Convert openai SDK exceptions to unified exception types."""
+    # Streaming clients can surface raw httpx transport errors rather than an
+    # OpenAI SDK wrapper. Normalize them so the Agent retry loop handles them.
+    try:
+        import httpx
+
+        if isinstance(e, httpx.TransportError):
+            detail = str(e) or type(e).__name__
+            return APIConnectionError(detail)
+    except ImportError:
+        pass
+
     import openai as openai_mod
 
     if isinstance(e, openai_mod.RateLimitError):
@@ -120,11 +131,14 @@ class OpenAIAdapter(BaseAdapter):
     ) -> AsyncOpenAI:
         """Create an AsyncOpenAI client with optional overrides."""
         import httpx
-        # Bound the request so a stalled endpoint fails fast (~120s) and lets
+        # Bound the request so a stalled endpoint eventually fails and lets
         # pantheon's own num_retries loop retry, instead of hanging on the SDK
-        # default (~600s). max_retries=0: don't also retry inside the SDK.
+        # default (~600s). Long cached prompts can legitimately take over two
+        # minutes to produce the first event, so use a configurable 180s
+        # default. max_retries=0: don't also retry inside the SDK.
+        read_timeout = float(os.getenv("PANTHEON_LLM_READ_TIMEOUT", "180"))
         kwargs = {
-            "timeout": httpx.Timeout(120.0, connect=10.0),
+            "timeout": httpx.Timeout(read_timeout, connect=10.0),
             "max_retries": 0,
         }
         if base_url:
