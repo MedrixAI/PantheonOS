@@ -90,6 +90,23 @@ def _normalize_user_content(content: Any) -> Any:
 
 def _wrap_anthropic_error(e: Exception) -> Exception:
     """Convert anthropic SDK exceptions to unified exception types."""
+    # The SDK incrementally parses input_json_delta events for tool calls.
+    # A proxy/provider can occasionally end or corrupt that partial JSON
+    # stream, which the SDK exposes as a bare ValueError instead of a network
+    # exception. Treat only recognizable parser failures as transient.
+    error_text = str(e).lower()
+    if isinstance(e, ValueError) and any(
+        marker in error_text
+        for marker in (
+            "expected value at line",
+            "eof while parsing",
+            "trailing characters at line",
+            "unexpected end of json",
+            "unterminated string at line",
+        )
+    ):
+        return APIConnectionError(f"Malformed Anthropic stream JSON: {e}")
+
     # The Anthropic streaming iterator may surface raw httpx transport errors
     # after the response has started.  Normalize them before the generic agent
     # retry classifier sees the exception.

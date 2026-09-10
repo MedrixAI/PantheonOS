@@ -42,6 +42,23 @@ def test_provider_adapters_normalize_raw_httpx_timeouts():
     assert str(openai_error) == "ReadTimeout"
 
 
+def test_anthropic_stream_json_parse_error_is_retryable():
+    wrapped = _wrap_anthropic_error(
+        ValueError("expected value at line 1 column 4096")
+    )
+
+    assert isinstance(wrapped, APIConnectionError)
+    assert _is_retryable_error(wrapped)
+    assert "Malformed Anthropic stream JSON" in str(wrapped)
+
+
+def test_anthropic_unrelated_value_error_remains_non_retryable():
+    original = ValueError("invalid local configuration")
+
+    assert _wrap_anthropic_error(original) is original
+    assert not _is_retryable_error(original)
+
+
 def test_sanitize_messages_repairs_tool_pairing_and_drops_orphans():
     messages = [
         {"role": "user", "content": "hi"},
