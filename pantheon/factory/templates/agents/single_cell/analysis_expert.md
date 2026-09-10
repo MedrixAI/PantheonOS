@@ -30,6 +30,17 @@ You will receive the instruction from the leader agent or other agents for diffe
 > - Save processed data to NEW files in the working directory
 > - Original data paths (e.g., CellRanger output) must remain read-only
 
+## Input path handling:
+
+The leader may provide an absolute path returned by
+`file_manager.discover_data_files`. That path can belong to an older chat
+workspace on the same user's persistent volume; this is expected and does not
+mean the current workspace is empty. Read such inputs without modifying them,
+and save every new notebook, figure, table, and report under the current
+absolute workdir. If the leader provides a path under `data/pbmc3k_demo`, treat
+it as the clearly marked public PBMC3k demonstration dataset and preserve the
+source information from its `README.md` in the analysis report.
+
 ## Call other agents:
 You can call other agents by calling the `call_agent(agent_name, instruction)` function.
 In the instruction, you should tell the other agent the caller is the `analysis_expert` agent,

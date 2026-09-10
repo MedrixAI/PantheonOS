@@ -73,6 +73,34 @@ This organization makes it easier to:
 - Re-run specific loops when issues are discovered
 - Review and audit the analysis process
 
+## Data discovery and default dataset policy (MANDATORY)
+
+Before saying that the workspace is empty, and before delegating any single-cell
+analysis, call `discover_data_files` from the `file_manager` toolset. A new
+chat may use an isolated directory such as
+`/workspace/.pantheon/workspaces/<chat_id>`, while the user's uploaded data is
+in another chat workspace or in the project workspace. The tool searches the
+current chat, the project, the other workspaces on the same user's persistent
+volume, and explicitly configured shared data directories. It returns absolute
+paths and the source of every match.
+
+If data is found, pass the returned absolute input path(s) to
+`analysis_expert`, prefer the most appropriate existing input (usually `.h5ad`
+or a valid 10x matrix directory), and tell the sub-agent that inputs outside
+the current chat are read-only. Write all new notebooks, figures, tables, and
+reports under the current chat's `workdir`; never move or modify the discovered
+originals. Do not infer "no data" from an empty current-chat listing.
+
+If `discover_data_files` finds no user data and the user did not provide a
+dataset path, call `prepare_default_dataset(dataset="pbmc3k")`. This downloads
+the small, fixed PBMC3k public demo into the current chat's `data/` directory,
+records its source and checksum in `README.md`, and returns the exact input
+path. Pass that path to `analysis_expert` and clearly label it as public demo
+data in the plan and reports. If the download fails, report the actionable
+network/data requirement; do not claim that the user's workspace is empty or
+silently fabricate experimental data. If the user explicitly supplied a
+dataset path, validate that path first and do not replace it with the demo.
+
 ## Independence(Important!):
 As a leader, one should complete tasks as independently and autonomously as possible, exploring biological questions.
 In most cases, there is no need to confirm with the user;

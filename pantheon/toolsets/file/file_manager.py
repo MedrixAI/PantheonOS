@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -7,7 +8,9 @@ import tempfile
 import shutil
 import base64
 import io
-from datetime import datetime
+import tarfile
+import urllib.request
+from datetime import datetime, timezone
 
 
 
@@ -176,6 +179,302 @@ def _resolve_template_layer_path(file_path: str) -> Path | None:
         if cand.is_file():
             return cand
     return None
+
+
+# Scientific input files are intentionally discovered by a dedicated tool
+# instead of making the normal ``glob`` search wider.  The latter would make a
+# chat's isolated working directory appear to contain every hidden/runtime file
+# on the volume and would also make unrelated agents slower.
+_DATA_FILE_SUFFIXES = frozenset({
+    ".h5ad",
+    ".h5",
+    ".loom",
+    ".mtx",
+    ".mtx.gz",
+    ".csv",
+    ".tsv",
+    ".rds",
+    ".rdata",
+})
+_DEFAULT_PBMC3K_URL = (
+    "https://cf.10xgenomics.com/samples/cell-exp/1.1.0/pbmc3k/"
+    "pbmc3k_filtered_gene_bc_matrices.tar.gz"
+)
+_DEFAULT_DATASET_MAX_BYTES = 100 * 1024 * 1024
+
+
+def _resolved_path(path: Path) -> Path:
+    """Resolve a path without requiring it to exist."""
+    try:
+        return path.expanduser().resolve(strict=False)
+    except OSError:
+        return path.expanduser().absolute()
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """Return whether *path* is inside *root* (including root itself)."""
+    try:
+        _resolved_path(path).relative_to(_resolved_path(root))
+        return True
+    except ValueError:
+        return False
+
+
+def _data_file_suffix(path: Path) -> str:
+    """Return a compound suffix for compressed Matrix Market files."""
+    name = path.name.lower()
+    if name.endswith(".mtx.gz"):
+        return ".mtx.gz"
+    return path.suffix.lower()
+
+
+def _append_unique_root(
+    roots: list[tuple[str, Path]], seen: set[Path], source: str, path: Path
+) -> None:
+    """Add an existing directory once, using its resolved path as identity."""
+    resolved = _resolved_path(path)
+    if resolved in seen or not resolved.is_dir():
+        return
+    seen.add(resolved)
+    roots.append((source, resolved))
+
+
+def _workspace_volume_roots(active_root: Path, endpoint_root: Path) -> list[Path]:
+    """Infer the user's persistent volume roots without walking parent hosts.
+
+    Hub containers mount one user's PVC at ``/workspace``.  In the newer
+    layout, isolated chats live below ``/workspace/.pantheon/workspaces`` and
+    the endpoint itself runs from ``/workspace/default_workspace``.  The
+    explicit environment variables cover both layouts and local deployments.
+    No arbitrary filesystem parent is searched: only an explicitly configured
+    workspace root or a root inferred from the known Pantheon layout is used.
+    """
+    roots: list[Path] = []
+    for env_name in ("WORKSPACE_PATH", "WORKSPACE", "PANTHEON_WORKSPACE_ROOT"):
+        value = os.environ.get(env_name)
+        if value:
+            for item in value.split(os.pathsep):
+                if item.strip():
+                    roots.append(Path(item.strip()))
+
+    for candidate in (active_root, endpoint_root):
+        candidate = _resolved_path(candidate)
+        if candidate.name == "default_workspace":
+            roots.append(candidate.parent)
+        if candidate.name == "workspace":
+            roots.append(candidate)
+        for parent in (candidate, *candidate.parents):
+            if parent.name == ".pantheon":
+                roots.append(parent.parent)
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        root = _resolved_path(root)
+        # Never let a failed inference turn into a scan of the filesystem root.
+        if root == Path(root.anchor):
+            continue
+        if root not in seen:
+            seen.add(root)
+            unique.append(root)
+    return unique
+
+
+def _collect_data_files(
+    root: Path,
+    source: str,
+    active_root: Path,
+    max_depth: int,
+    remaining: int,
+    seen_files: set[Path],
+) -> list[dict]:
+    """Collect supported data files below one trusted root.
+
+    Hidden/runtime directories are skipped by default.  The caller passes the
+    hidden ``.pantheon/workspaces`` directory explicitly, which is the one
+    hidden location that must be searched to preserve data across new chats.
+    Symlinks are not followed outside the trusted root.
+    """
+    root = _resolved_path(root)
+    if not root.is_dir() or remaining <= 0:
+        return []
+
+    files: list[dict] = []
+    try:
+        walker = os.walk(root, topdown=True, followlinks=False)
+        for directory, dir_names, file_names in walker:
+            directory_path = Path(directory)
+            try:
+                depth = len(directory_path.relative_to(root).parts)
+            except ValueError:
+                continue
+
+            # Do not enter hidden/runtime directories while scanning a broad
+            # user root.  An explicit .pantheon/workspaces root has no hidden
+            # children in normal layouts and remains fully searchable.
+            dir_names[:] = sorted(
+                name
+                for name in dir_names
+                if not name.startswith(".")
+                and not (directory_path == root and name == ".pantheon")
+                and not (directory_path == root and name in {".git", "node_modules", "__pycache__"})
+                and not (directory_path / name).is_symlink()
+            )
+            if depth >= max_depth:
+                dir_names[:] = []
+
+            for name in sorted(file_names):
+                if len(files) >= remaining:
+                    return files
+                path = directory_path / name
+                if _data_file_suffix(path) not in _DATA_FILE_SUFFIXES:
+                    continue
+                if path.is_symlink():
+                    resolved_file = _resolved_path(path)
+                    if not _is_within(resolved_file, root):
+                        continue
+                try:
+                    stat_result = path.stat()
+                except (FileNotFoundError, OSError):
+                    continue
+                if not path.is_file() or stat_result.st_size <= 0:
+                    continue
+                resolved_file = _resolved_path(path)
+                if not _is_within(resolved_file, root) or resolved_file in seen_files:
+                    continue
+                seen_files.add(resolved_file)
+                try:
+                    relative_to_active = str(path.relative_to(active_root))
+                except ValueError:
+                    relative_to_active = None
+                files.append({
+                    "path": str(path),
+                    "name": path.name,
+                    "size": stat_result.st_size,
+                    "modified": datetime.fromtimestamp(
+                        stat_result.st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                    "type": "file",
+                    "source": source,
+                    "in_current_workspace": relative_to_active is not None,
+                    "relative_path": relative_to_active,
+                })
+    except (FileNotFoundError, PermissionError, OSError):
+        # A concurrently removed/temporarily unavailable project must not make
+        # the current chat report that its own workspace is empty.
+        return files
+    return files
+
+
+def _find_default_matrix_root(root: Path) -> Path | None:
+    """Return the extracted 10x directory containing Matrix Market files."""
+    matrix_files = list(root.rglob("matrix.mtx")) + list(root.rglob("matrix.mtx.gz"))
+    for matrix in matrix_files:
+        if not matrix.is_file():
+            continue
+        parent = matrix.parent
+        if (parent / "barcodes.tsv").is_file() and (
+            (parent / "genes.tsv").is_file() or (parent / "features.tsv").is_file()
+        ):
+            return parent
+    return None
+
+
+def _safe_extract_tar(archive_path: Path, destination: Path) -> None:
+    """Extract a trusted public dataset archive without path traversal."""
+    total_size = 0
+    destination = _resolved_path(destination)
+    with tarfile.open(archive_path, mode="r:gz") as archive:
+        for member in archive.getmembers():
+            if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
+                raise ValueError(f"Unsupported archive member: {member.name}")
+            member_path = _resolved_path(destination / member.name)
+            if not _is_within(member_path, destination):
+                raise ValueError(f"Archive member escapes destination: {member.name}")
+            total_size += max(member.size, 0)
+            if total_size > _DEFAULT_DATASET_MAX_BYTES:
+                raise ValueError("Default dataset archive expands beyond the safety limit")
+            archive.extract(member, path=destination)
+
+
+def _download_default_pbmc3k(destination: Path) -> dict:
+    """Download and stage the fixed PBMC3k demo dataset atomically."""
+    destination = _resolved_path(destination)
+    if destination.exists():
+        existing = _find_default_matrix_root(destination)
+        if existing:
+            return {
+                "success": True,
+                "status": "already_present",
+                "dataset": "pbmc3k",
+                "dataset_path": str(existing),
+                "source_url": _DEFAULT_PBMC3K_URL,
+            }
+        if any(destination.iterdir()):
+            return {
+                "success": False,
+                "status": "destination_conflict",
+                "error": f"Refusing to overwrite non-empty directory: {destination}",
+            }
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".pbmc3k-demo-", dir=str(destination.parent)))
+    archive_path = staging / "dataset.tar.gz"
+    extracted = staging / "extracted"
+    digest = hashlib.sha256()
+    try:
+        request = urllib.request.Request(
+            _DEFAULT_PBMC3K_URL,
+            headers={"User-Agent": "PantheonOS-scRNA-data-discovery/1.0"},
+        )
+        downloaded = 0
+        with urllib.request.urlopen(request, timeout=120) as response, archive_path.open("wb") as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > _DEFAULT_DATASET_MAX_BYTES:
+                    raise ValueError("Default dataset download exceeds the safety limit")
+                digest.update(chunk)
+                output.write(chunk)
+
+        extracted.mkdir(parents=True, exist_ok=True)
+        _safe_extract_tar(archive_path, extracted)
+        matrix_root = _find_default_matrix_root(extracted)
+        if matrix_root is None:
+            raise ValueError("Downloaded archive did not contain a valid 10x matrix")
+
+        readme = extracted / "README.md"
+        readme.write_text(
+            "# PBMC3k demo dataset\n\n"
+            "This is a public demonstration dataset downloaded on demand for a "
+            "single-cell analysis request when the user workspace contains no data.\n\n"
+            f"- Source: {_DEFAULT_PBMC3K_URL}\n"
+            "- Provider: 10x Genomics, PBMC 3k (healthy donor)\n"
+            f"- Archive SHA-256: {digest.hexdigest()}\n"
+            "- Intended use: demonstration and pipeline validation; do not treat "
+            "it as the user's experimental data.\n",
+            encoding="utf-8",
+        )
+        if destination.exists() and any(destination.iterdir()):
+            return {
+                "success": False,
+                "status": "destination_conflict",
+                "error": f"Destination became non-empty while downloading: {destination}",
+            }
+        extracted.rename(destination)
+        final_matrix_root = destination / matrix_root.relative_to(extracted)
+        return {
+            "success": True,
+            "status": "downloaded",
+            "dataset": "pbmc3k",
+            "dataset_path": str(final_matrix_root),
+            "source_url": _DEFAULT_PBMC3K_URL,
+            "archive_sha256": digest.hexdigest(),
+        }
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 class FileManagerToolSetBase(ToolSet):
@@ -1926,6 +2225,192 @@ class FileManagerToolSet(FileManagerToolSetBase):
                 "max_depth": max_depth,
             }
 
+        return result
+
+    @tool
+    async def discover_data_files(
+        self,
+        max_files: int = 200,
+        max_depth: int = 8,
+    ) -> dict:
+        """Find scientific input files across this user's safe workspace roots.
+
+        This is the first file-search operation for scientific workflows.  A
+        chat may run in ``/workspace/.pantheon/workspaces/<chat-id>`` while the
+        user's uploaded data lives in another chat or in the project workspace.
+        This tool searches those locations without merging users or exposing
+        arbitrary host paths.  It returns absolute paths so a downstream
+        analysis can read an existing file without copying or modifying it.
+
+        Search order:
+        1. current chat workspace;
+        2. endpoint/project workspace;
+        3. other chat workspaces on the same user's PVC;
+        4. the same user's volume root;
+        5. explicitly configured ``PANTHEON_SHARED_DATA_DIR`` or
+           ``PANTHEON_DATA_DIR`` directories.
+
+        Supported formats include AnnData/HDF5, Loom, Matrix Market, CSV/TSV,
+        and common R single-cell objects.  Runtime files and hidden folders
+        are excluded except for the known historical chat-workspace location.
+        """
+        try:
+            max_files = max(1, min(int(max_files), 1000))
+            max_depth = max(0, min(int(max_depth), 32))
+        except (TypeError, ValueError):
+            return {"success": False, "error": "max_files and max_depth must be integers"}
+
+        active_root = _resolved_path(self._get_root())
+        endpoint_root = _resolved_path(self.path)
+        roots: list[tuple[str, Path]] = []
+        seen_roots: set[Path] = set()
+        _append_unique_root(roots, seen_roots, "current_chat", active_root)
+        _append_unique_root(roots, seen_roots, "project_workspace", endpoint_root)
+
+        volume_roots = _workspace_volume_roots(active_root, endpoint_root)
+        for volume_root in volume_roots:
+            # This explicit root is what makes files uploaded in an older chat
+            # visible to a newly created chat, while the broad volume scan still
+            # avoids all hidden runtime directories.
+            _append_unique_root(
+                roots,
+                seen_roots,
+                "existing_chat_workspace",
+                volume_root / ".pantheon" / "workspaces",
+            )
+            _append_unique_root(roots, seen_roots, "user_workspace", volume_root)
+
+        configured_shared: list[Path] = []
+        for env_name in ("PANTHEON_SHARED_DATA_DIR", "PANTHEON_DATA_DIR"):
+            value = os.environ.get(env_name, "")
+            configured_shared.extend(
+                Path(item.strip())
+                for item in value.split(os.pathsep)
+                if item.strip()
+            )
+        for shared_root in configured_shared:
+            _append_unique_root(roots, seen_roots, "configured_shared_data", shared_root)
+
+        files: list[dict] = []
+        seen_files: set[Path] = set()
+        for source, root in roots:
+            if len(files) >= max_files:
+                break
+            files.extend(
+                _collect_data_files(
+                    root=root,
+                    source=source,
+                    active_root=active_root,
+                    max_depth=max_depth,
+                    remaining=max_files - len(files),
+                    seen_files=seen_files,
+                )
+            )
+
+        source_order = {
+            "current_chat": 0,
+            "project_workspace": 1,
+            "existing_chat_workspace": 2,
+            "user_workspace": 3,
+            "configured_shared_data": 4,
+        }
+
+        def sort_key(item: dict) -> tuple:
+            suffix = _data_file_suffix(Path(item["path"]))
+            # AnnData is usually the most direct input; files under a data
+            # directory are preferred to generated output files.
+            format_order = {
+                ".h5ad": 0,
+                ".loom": 1,
+                ".h5": 2,
+                ".mtx": 3,
+                ".mtx.gz": 3,
+                ".csv": 4,
+                ".tsv": 4,
+                ".rds": 5,
+                ".rdata": 5,
+            }.get(suffix, 9)
+            lowered = item["path"].lower().replace("\\", "/")
+            generated_penalty = 10 if any(
+                marker in lowered.split("/")
+                for marker in ("/output/", "/results/", "/figures/")
+            ) else 0
+            data_bonus = -1 if "/data/" in lowered or lowered.endswith("/data") else 0
+            return (
+                source_order.get(item["source"], 99),
+                generated_penalty,
+                data_bonus,
+                format_order,
+                item["path"],
+            )
+
+        files.sort(key=sort_key)
+        return {
+            "success": True,
+            "files": files,
+            "total": len(files),
+            "capped": len(files) >= max_files,
+            "roots_scanned": [
+                {"source": source, "path": str(root)} for source, root in roots
+            ],
+            "has_user_data": bool(files),
+            "default_dataset": {
+                "id": "pbmc3k",
+                "available_on_demand": True,
+                "source_url": _DEFAULT_PBMC3K_URL,
+                "note": "Downloaded only when no user data is found; clearly marked as demo data.",
+            },
+            "message": (
+                f"Found {len(files)} scientific data file(s) across the user's "
+                f"workspace roots."
+                if files
+                else "No user scientific data found. Use prepare_default_dataset for a clearly marked PBMC3k demo."
+            ),
+        }
+
+    @tool
+    async def prepare_default_dataset(self, dataset: str = "pbmc3k") -> dict:
+        """Prepare a reproducible public demo dataset when no user data exists.
+
+        Currently the only supported dataset is PBMC3k from 10x Genomics.  The
+        archive is downloaded into the current chat's ``data/pbmc3k_demo``
+        directory, never into the image, and its URL and SHA-256 are recorded
+        in ``README.md``.  If any user data is already discoverable, this method
+        refuses to download a demo and returns the existing discovery result.
+        """
+        if str(dataset).lower() != "pbmc3k":
+            return {
+                "success": False,
+                "error": "Only the reproducible public 'pbmc3k' demo is supported",
+            }
+
+        discovery = await self.discover_data_files()
+        if discovery.get("files"):
+            return {
+                "success": True,
+                "status": "user_data_available",
+                "message": "User data already exists; no default dataset was downloaded.",
+                "files": discovery["files"],
+                "roots_scanned": discovery.get("roots_scanned", []),
+            }
+
+        destination = _resolved_path(self._get_root()) / "data" / "pbmc3k_demo"
+        try:
+            result = await asyncio.to_thread(_download_default_pbmc3k, destination)
+        except Exception as exc:  # noqa: BLE001 - report network/archive errors to the agent
+            logger.warning(f"prepare_default_dataset failed: {exc}")
+            return {
+                "success": False,
+                "status": "download_failed",
+                "dataset": "pbmc3k",
+                "source_url": _DEFAULT_PBMC3K_URL,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        if result.get("success"):
+            result["message"] = (
+                "Prepared PBMC3k as public demo data. It is not user-uploaded "
+                "data; use the returned dataset_path and cite the README source."
+            )
         return result
 
     @tool
