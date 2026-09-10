@@ -350,7 +350,11 @@ class Endpoint(FileTransferToolSet):
                         acompletion(
                             messages=[{"role": "user", "content": "ping"}],
                             model=model,
-                            model_params={"max_tokens": 1},
+                            # LiteLLM's Anthropic-compatible route enforces a
+                            # minimum output allowance of 16 tokens.  Using 1
+                            # made every cold-start warmup fail with HTTP 400,
+                            # adding eight useless retries before giving up.
+                            model_params={"max_tokens": 16},
                             num_retries=0,
                         ),
                         timeout=40,

@@ -80,6 +80,25 @@ def test_startup_profile_log_helper_respects_disabled_env(monkeypatch):
     assert emitted == []
 
 
+@pytest.mark.asyncio
+async def test_endpoint_llm_warmup_uses_provider_minimum_output_tokens(monkeypatch):
+    calls = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    endpoint = object.__new__(Endpoint)
+    monkeypatch.setenv("LLM_WARMUP_MODEL", "anthropic/claude-haiku-4-5")
+    monkeypatch.setattr("pantheon.utils.llm.acompletion", fake_acompletion)
+
+    await endpoint._warmup_llm_connection()
+
+    assert len(calls) == 1
+    assert calls[0]["model_params"]["max_tokens"] == 16
+    assert calls[0]["num_retries"] == 0
+
+
 def test_factory_templates_do_not_sync_to_global_in_runtime_mode(monkeypatch, tmp_path):
     # Sandbox startup should not copy factory templates into ephemeral HOME.
     # Runtime loading falls back to the packaged factory templates instead.
