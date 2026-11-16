@@ -140,6 +140,14 @@ def test_single_cell_team_includes_fm_router(tmp_path):
     assert "fm_router" in agent_ids
 
 
+def test_target_prioritization_team_resolves_three_distinct_roles(tmp_path):
+    manager = _make_manager(tmp_path)
+    team = manager.get_template("target_prioritization_team")
+    assert team is not None
+    assert [agent.id for agent in team.agents] == ["leader", "researcher", "auditor"]
+    assert all(agent.instructions for agent in team.agents)
+
+
 def test_graph_maker_team_and_dedicated_agents_are_not_factory_defaults(tmp_path):
     manager = _make_manager(tmp_path)
 
