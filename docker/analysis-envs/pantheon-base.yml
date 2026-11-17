@@ -42,8 +42,9 @@ name: pantheon-base
 # a second time.
 # verify: decoupler numpy scipy pandas anndata scanpy muon scvi scvelo harmonypy scrublet spatialdata snapatac2 scirpy rpy2 scib sklearn skimage cv2 tifffile matplotlib seaborn dask polars
 channels:
-  - conda-forge
-  - bioconda
+  # CI mirror (TUNA): conda.anaconda.org is unreachable from the build network.
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/bioconda
 dependencies:
   # --- python and the numeric core -------------------------------------
   - python=3.12

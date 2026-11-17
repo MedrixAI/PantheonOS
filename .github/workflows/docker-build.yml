@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - develop
-      - feat/pantheon-fleet
     tags:
       - 'v*.*.*'
     paths:
@@ -18,186 +16,66 @@ on:
       - 'funcdesc/**'
       - 'cmd2func/**'
       - '.github/workflows/docker-build.yml'
-  pull_request:
-    branches:
-      - main
-      - develop
-    paths:
-      - 'docker/**'
-      - 'pantheon/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'MANIFEST.in'
-      - 'executor/**'
-      - 'funcdesc/**'
-      - 'cmd2func/**'
   workflow_dispatch:
-    inputs:
-      push_to_dockerhub:
-        description: 'Push to Docker Hub'
-        required: false
-        default: 'true'
-        type: boolean
+
+concurrency:
+  group: pantheon-agent-image
+  cancel-in-progress: false
 
 env:
-  DOCKER_IMAGE: nanguage/pantheon-agents
+  REGISTRY: 844646328509.dkr.ecr.ap-southeast-1.amazonaws.com
+  AWS_REGION: ap-southeast-1
   DOCKERFILE_PATH: docker/Dockerfile
-  BUILD_CONTEXT: .
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    # Self-hosted runner in the ACK production-ci namespace (native amd64,
+    # dind sidecar). ECR push credentials and the ACK kubeconfig are mounted
+    # into the runner pod from secrets medrix-ci-aws / medrix-ci-kubeconfig.
+    runs-on: self-hosted
     permissions:
       contents: read
-      packages: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Extract version from pantheon/__init__.py
-        id: version
-        run: |
-          VERSION=$(grep -oP "__version__ = \"\K[^\"]+(?=\")" pantheon/__init__.py)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Pantheon version: $VERSION"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
-
-      - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels)
+      - name: Extract version and commit tag
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            # Tag with branch name for branch pushes
-            type=ref,event=branch
-            # Tag with PR number for pull requests
-            type=ref,event=pr
-            # Tag with semver for version tags (e.g., v0.4.9)
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # Tag with Python package version from __init__.py (for main branch)
-            type=raw,value=${{ steps.version.outputs.version }},enable={{is_default_branch}}
-            # Tag with 'latest' for main branch
-            type=raw,value=latest,enable={{is_default_branch}}
-            # Tag with commit SHA (use static prefix to stay valid for
-            # tag pushes where {{branch}} would be empty -> invalid tag)
-            type=sha,prefix=sha-,format=short
-          labels: |
-            org.opencontainers.image.title=Pantheon Agents
-            org.opencontainers.image.description=Pantheon AI Agents Docker Image with dual-mode support
-            org.opencontainers.image.vendor=Pantheon Team
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ${{ env.BUILD_CONTEXT }}
-          file: ${{ env.DOCKERFILE_PATH }}
-          # amd64 only — Modal (us-west) and the DO clusters are all amd64;
-          # arm64 was being emulated under QEMU and roughly doubled build time.
-          # Re-add linux/arm64 here if the agent image ever needs to run on
-          # Apple Silicon directly.
-          platforms: linux/amd64
-          # NOTE: build-push-action defaults push=false. This line was
-          # accidentally removed together with the arm64 platform in 86204cd,
-          # silently turning the job into build-only — Docker Hub stopped
-          # receiving new images while CI still reported success. Keep it.
-          push: ${{ github.event_name != 'pull_request' && (github.event.inputs.push_to_dockerhub != 'false') }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            CACHE_VERSION=v1
-
-      - name: Generate image summary
-        if: github.event_name != 'pull_request'
         run: |
-          echo "## Docker Image Published 🐳" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Pantheon Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Image Tags" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Quick Start" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Standalone Mode (for users):**" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "docker run -it --rm \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -e PANTHEON_MODE=standalone \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -v \$(pwd)/workspace:/workspace \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -p 8080:8080 \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -p 8222:8222 \\" >> $GITHUB_STEP_SUMMARY
-          echo "  ${{ env.DOCKER_IMAGE }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Hub Mode (for Pantheon Hub):**" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "docker run -d \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -e ID_HASH=agent-001 \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -e NATS_SERVERS=nats://hub:4222 \\" >> $GITHUB_STEP_SUMMARY
-          echo "  ${{ env.DOCKER_IMAGE }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          VERSION=$(grep -oP '__version__ = "\K[^"]+(?=")' pantheon/__init__.py)
+          SHA=$(git rev-parse --short HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Pantheon version: $VERSION (sha-$SHA)"
 
-      - name: Test image (Standalone Mode)
-        if: github.event_name != 'pull_request'
+      - name: Build Docker image
         run: |
-          echo "Testing image basic functionality..."
-          docker run --rm \
-            --entrypoint python \
-            ${{ env.DOCKER_IMAGE }}:latest \
-            -c "import pantheon; print(f'✓ Pantheon version: {pantheon.__version__}')"
+          TAGS="-t $REGISTRY/medrix/pantheon-agents:sha-${{ steps.meta.outputs.sha }}"
+          TAGS="$TAGS -t $REGISTRY/medrix/pantheon-agents:${{ steps.meta.outputs.version }}"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            TAGS="$TAGS -t $REGISTRY/medrix/pantheon-agents:latest"
+          fi
+          docker build -f "$DOCKERFILE_PATH" $TAGS .
 
-      - name: Image scan with Trivy
-        if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.DOCKER_IMAGE }}:latest
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-        continue-on-error: true
+      - name: Push to ECR
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+          docker push "$REGISTRY/medrix/pantheon-agents:sha-${{ steps.meta.outputs.sha }}"
+          docker push "$REGISTRY/medrix/pantheon-agents:${{ steps.meta.outputs.version }}"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            docker push "$REGISTRY/medrix/pantheon-agents:latest"
+          fi
 
-      - name: Upload Trivy results to GitHub Security
-        if: github.event_name != 'pull_request'
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-        continue-on-error: true
-
-      # Note: This step requires Docker Hub token with "Read, Write, Delete" permissions
-      # If it fails with "Forbidden", check token permissions at:
-      # https://hub.docker.com/settings/security
-      - name: Update Docker Hub README
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ env.DOCKER_IMAGE }}
-          readme-filepath: ./docker/README.md
-          short-description: 'Pantheon AI Agents - Dual-mode Docker image for local and production use'
-        continue-on-error: true
+      - name: Point production hub at the new agent image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          DIGEST=$(aws ecr describe-images --region "$AWS_REGION" \
+            --repository-name medrix/pantheon-agents \
+            --image-ids imageTag=sha-${{ steps.meta.outputs.sha }} \
+            --query 'imageDetails[0].imageDigest' --output text)
+          kubectl set env deployment/pantheon-hub -n pantheon \
+            K8S_CHATROOM_IMAGE="$REGISTRY/medrix/pantheon-agents@$DIGEST"
+          kubectl rollout status deployment/pantheon-hub -n pantheon --timeout=300s
+          echo "✅ Hub now spawns agents from $DIGEST"

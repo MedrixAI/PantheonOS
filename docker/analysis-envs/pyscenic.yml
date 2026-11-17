@@ -16,8 +16,9 @@
 name: pyscenic
 # verify: pyscenic numpy pandas loompy anndata
 channels:
-  - conda-forge
-  - bioconda
+  # CI mirror (TUNA): conda.anaconda.org is unreachable from the build network.
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/bioconda
 dependencies:
   - python=3.10
   - pip

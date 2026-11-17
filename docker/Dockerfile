@@ -3,6 +3,9 @@
 # Use python:3.12-slim as base for BOTH stages to ensure python binary paths match, preventing broken venv symlinks
 
 FROM python:3.12-slim-bookworm AS builder
+# CI network: Aliyun Debian mirror (deb.debian.org CDN edges served stale
+# indexes / 404s from the build network).
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do [ -f "$f" ] && sed -i "s|deb.debian.org/debian-security|mirrors.aliyun.com/debian-security|g; s|security.debian.org/debian-security|mirrors.aliyun.com/debian-security|g; s|deb.debian.org/debian|mirrors.aliyun.com/debian|g" "$f"; done
 
 # ============================================
 # Build Arguments (for cache invalidation and path configuration)
@@ -161,6 +164,9 @@ RUN ${VENV_PATH}/bin/python -m compileall -q /app/pantheon 2>/dev/null || true
 # Production Stage (Optimized)
 # ============================================
 FROM python:3.12-slim-bookworm
+# CI network: Aliyun Debian mirror (deb.debian.org CDN edges served stale
+# indexes / 404s from the build network).
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do [ -f "$f" ] && sed -i "s|deb.debian.org/debian-security|mirrors.aliyun.com/debian-security|g; s|security.debian.org/debian-security|mirrors.aliyun.com/debian-security|g; s|deb.debian.org/debian|mirrors.aliyun.com/debian|g" "$f"; done
 
 # Install runtime dependencies and Playwright browser dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
