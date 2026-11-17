@@ -68,6 +68,14 @@ jobs:
             docker push "$REGISTRY/medrix/pantheon-agents:latest"
           fi
 
+      - name: Install kubectl
+        if: github.ref == 'refs/heads/main'
+        run: |
+          curl -fsSL -o /usr/local/bin/kubectl \
+            https://dl.k8s.io/release/v1.35.0/bin/linux/amd64/kubectl
+          chmod +x /usr/local/bin/kubectl
+          kubectl version --client=true
+
       - name: Point production hub at the new agent image
         if: github.ref == 'refs/heads/main'
         run: |
