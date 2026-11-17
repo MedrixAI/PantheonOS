@@ -4,10 +4,12 @@ import pytest
 
 from pantheon.agent import Agent
 from pantheon.team import SwarmTeam
+from _llm_guard import requires_llm
 
 TEST_MODEL = os.getenv("PANTHEON_MODEL", "gpt-4o-mini")
 
 
+@requires_llm
 async def test_swarm_team():
     scifi_fan = Agent(
         name="scifi_fan",

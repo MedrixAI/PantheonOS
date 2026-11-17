@@ -102,14 +102,18 @@ class TestCapabilityDetection:
             reset_responses_api_cache,
         )
 
+        from pantheon.utils.llm_providers import detect_provider
+
         reset_responses_api_cache()
         assert supports_tool_result_image("openai/gpt-5.4") is True
+        # Mark the exact config detect_provider produces at runtime so the
+        # (base_url, model) cache key matches even if env overrides base_url.
         mark_responses_api_unavailable(
-            ProviderConfig(provider_type=ProviderType.OPENAI, model_name="gpt-5.4")
+            detect_provider("openai/gpt-5.4", relaxed_schema=False)
         )
         assert supports_tool_result_image("openai/gpt-5.4") is False
         # Other OpenAI models are independent.
-        assert supports_tool_result_image("openai/gpt-4o") is True
+        assert supports_tool_result_image("openai/gpt-5.4-mini") is True
         reset_responses_api_cache()
 
     def test_anthropic_and_gemini_unaffected_by_openai_cache(self):
@@ -784,14 +788,16 @@ class TestObserveImagesRouting:
         # (e.g., proxy endpoint that doesn't implement /v1/responses), which
         # flips supports_tool_result_image to False and forces the sub-agent
         # path — the same fallback we use on a 404 in production.
+        from pantheon.utils.llm_providers import detect_provider
+
         reset_responses_api_cache()
         mark_responses_api_unavailable(
-            ProviderConfig(provider_type=ProviderType.OPENAI, model_name="gpt-4o")
+            detect_provider("openai/gpt-5.4", relaxed_schema=False)
         )
         try:
             with patch(
                 "pantheon.agent.get_current_run_model",
-                return_value="gpt-4o",
+                return_value="openai/gpt-5.4",
             ):
                 result = await fm.observe_images.__wrapped__(
                     fm, question="what is this?", image_paths=[sample_image]

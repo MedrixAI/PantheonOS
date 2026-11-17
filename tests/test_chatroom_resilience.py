@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 
 from pantheon.chatroom.room import ChatRoom
 from pantheon.internal.memory import JSONLBackend, MemoryManager
@@ -29,6 +30,9 @@ async def test_list_chats_skips_corrupted_metadata():
 
         chatroom = ChatRoom.__new__(ChatRoom)
         chatroom.memory_manager = MemoryManager(memory_dir, use_jsonl=True)
+        chatroom.chat_teams = {}
+        chatroom.threads = {}
+        chatroom.project_manager = SimpleNamespace(list_projects=lambda: [])
 
         result = await ChatRoom.list_chats(chatroom)
 
@@ -55,6 +59,9 @@ async def test_list_chats_skips_corrupted_legacy_json_metadata():
 
         chatroom = ChatRoom.__new__(ChatRoom)
         chatroom.memory_manager = MemoryManager(memory_dir, use_jsonl=True)
+        chatroom.chat_teams = {}
+        chatroom.threads = {}
+        chatroom.project_manager = SimpleNamespace(list_projects=lambda: [])
 
         result = await ChatRoom.list_chats(chatroom)
 
@@ -84,6 +91,9 @@ async def test_list_chats_uses_metadata_without_loading_jsonl_messages(monkeypat
 
         chatroom = ChatRoom.__new__(ChatRoom)
         chatroom.memory_manager = MemoryManager(memory_dir, use_jsonl=True)
+        chatroom.chat_teams = {}
+        chatroom.threads = {}
+        chatroom.project_manager = SimpleNamespace(list_projects=lambda: [])
 
         def fail_load_messages(self, memory_id):
             raise AssertionError(f"load_messages should not be called for {memory_id}")

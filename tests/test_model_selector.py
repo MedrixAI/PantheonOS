@@ -218,8 +218,8 @@ class TestModelResolution:
 
         assert models[0] == "gpt-image-2"
 
-    def test_resolve_image_gen_model_prefers_gemini_when_both_providers_available(self, mock_settings):
-        """Default image generation should prefer Gemini over OpenAI when both are available."""
+    def test_resolve_image_gen_model_prefers_openai_when_both_providers_available(self, mock_settings):
+        """Default image generation follows the openai-first priority order."""
         selector = ModelSelector(mock_settings)
 
         with patch(
@@ -228,7 +228,7 @@ class TestModelResolution:
         ):
             models = selector.resolve_image_gen_model("normal")
 
-        assert models[0] == "gemini/gemini-3.1-flash-image-preview"
+        assert models[0] == "gpt-image-2"
 
 
 class TestCapabilityFiltering:

@@ -35,7 +35,10 @@ def _make_settings(configs: dict):
 
 class TestGetToolsets:
     @pytest.mark.asyncio
-    async def test_injects_think_tool_only_when_primary_declares_think(self):
+    async def test_injects_think_tool_only_when_primary_declares_think(self, monkeypatch):
+        # Injection logic is gated by THINK_TOOL_RETIRED; exercise it with the
+        # retirement guard lifted (default-retired behavior tested below).
+        monkeypatch.setattr("pantheon.internal.think_plugin.THINK_TOOL_RETIRED", False)
         plugin = ThinkPlugin()
         team = _make_team(primary_toolsets=["file_manager", "think"])
 
@@ -59,9 +62,31 @@ class TestGetToolsets:
         team.team_agents[1].tool.assert_not_called()
 
 
+class TestRetiredDefault:
+    @pytest.mark.asyncio
+    async def test_retired_guard_blocks_tool_injection_even_when_declared(self):
+        plugin = ThinkPlugin()
+        team = _make_team(primary_toolsets=["think"])
+
+        specs = await plugin.get_toolsets(team)
+
+        assert specs == []
+        team.team_agents[0].tool.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retired_guard_blocks_prompt_injection_even_when_declared(self):
+        plugin = ThinkPlugin()
+        team = _make_team(primary_toolsets=["think"])
+
+        await plugin.on_team_created(team)
+
+        assert "## Think Tool Usage" not in team.team_agents[0].instructions
+
+
 class TestOnTeamCreated:
     @pytest.mark.asyncio
-    async def test_injects_prompt_only_for_primary_when_think_enabled(self):
+    async def test_injects_prompt_only_for_primary_when_think_enabled(self, monkeypatch):
+        monkeypatch.setattr("pantheon.internal.think_plugin.THINK_TOOL_RETIRED", False)
         plugin = ThinkPlugin()
         team = _make_team(primary_toolsets=["think"])
 

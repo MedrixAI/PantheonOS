@@ -22,6 +22,7 @@ from pantheon.utils.adapters.openai_adapter import _wrap_openai_error
 from pantheon.utils.tool_pairing import INCOMPLETE_TOOL_RESULT_PLACEHOLDER
 from pantheon.utils.llm_providers import ProviderConfig, ProviderType
 from pantheon.utils.vision import vision_input
+from _llm_guard import requires_llm
 
 HERE = Path(__file__).parent
 
@@ -315,6 +316,7 @@ async def test_prepare_execution_context_uses_resume_recovery(monkeypatch):
     assert ctx.conversation_history[-1]["role"] == "user"
 
 
+@requires_llm
 async def test_stream():
     agent = Agent(
         name="test",
@@ -329,6 +331,7 @@ async def test_stream():
     assert len(resp.messages) == 1
 
 
+@requires_llm
 async def test_tool_use():
     instructions = """
 You are a weather agent, you can use the weather API to get the weather of a city.
@@ -357,6 +360,7 @@ You are a weather agent, you can use the weather API to get the weather of a cit
     assert tool_msg["raw_content"]["weather"] == "sunny"
 
 
+@requires_llm
 async def test_structured_output():
     agent = Agent(
         name="test",
@@ -391,6 +395,7 @@ async def test_structured_output():
     assert resp.content is True
 
 
+@requires_llm
 async def test_structured_output_with_tool_use():
     agent = Agent(
         name="test",
@@ -428,6 +433,7 @@ async def test_structured_output_with_tool_use():
         assert 0 <= r <= 1.0
 
 
+@requires_llm
 async def test_agent_result_passing():
     scifi_fan = Agent(
         name="scifi_fan",
@@ -535,6 +541,7 @@ async def test_tool_timeout():
     assert flag, "Tool coroutine should continue in background instead of blocking the foreground call"
 
 
+@requires_llm
 async def test_agent_transfer():
     scifi_fan = Agent(
         name="scifi_fan",
@@ -557,6 +564,7 @@ async def test_agent_transfer():
     assert resp.to_agent == classic_literature_fan.name
 
 
+@requires_llm
 async def test_agent_relaxed_schema():
     agent = Agent(
         name="test",
@@ -575,6 +583,7 @@ async def test_agent_relaxed_schema():
     print(resp.content)
 
 
+@requires_llm
 async def test_vision():
     agent = Agent(
         name="test",

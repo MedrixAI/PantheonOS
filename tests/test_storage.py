@@ -358,7 +358,8 @@ class TestRealMemorySamples:
     @pytest.fixture
     def real_memory_dir(self):
         memory_dir = Path(__file__).resolve().parents[1] / ".pantheon" / "memory"
-        assert memory_dir.exists(), f"Real memory dir not found: {memory_dir}"
+        if not memory_dir.exists():
+            pytest.skip("real memory samples not present (.pantheon/memory is local-only)")
         return memory_dir
 
     def _copy_real_json_sample(self, source_dir: Path, dest_dir: Path) -> str:
@@ -372,7 +373,7 @@ class TestRealMemorySamples:
             if {"id", "name", "messages"} <= set(data.keys()):
                 shutil.copy2(json_file, dest_dir / json_file.name)
                 return json_file.stem
-        raise AssertionError("No valid real JSON memory sample found")
+        pytest.skip("No valid real JSON memory sample found")
 
     def _copy_real_jsonl_sample(self, source_dir: Path, dest_dir: Path) -> str:
         for meta_file in sorted(source_dir.glob("*.meta.json")):
@@ -391,7 +392,7 @@ class TestRealMemorySamples:
                 shutil.copy2(meta_file, dest_dir / meta_file.name)
                 shutil.copy2(jsonl_file, dest_dir / jsonl_file.name)
                 return memory_id
-        raise AssertionError("No valid real JSONL memory sample found")
+        pytest.skip("No valid real JSONL memory sample found")
 
     def test_real_json_sample_round_trip(self, temp_dir, real_memory_dir):
         memory_id = self._copy_real_json_sample(real_memory_dir, temp_dir)

@@ -1,7 +1,9 @@
 from pantheon.agent import Agent
 from pantheon.toolsets.python import PythonInterpreterToolSet
+from _llm_guard import requires_llm
 
 
+@requires_llm
 async def test_agent_call_local_toolset():
     toolset = PythonInterpreterToolSet("python_interpreter")
     agent = Agent(

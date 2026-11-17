@@ -32,6 +32,7 @@ class _FakeThread:
         self.context_variables = context_variables
         self.steer_queue = SimpleNamespace(drain=lambda: [])
         self._stop_flag = False
+        self._done = asyncio.Event()
         self.run_calls = 0
         self.response = {"success": True}
 

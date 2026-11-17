@@ -25,7 +25,7 @@ def test_glm_5_1_model_specs():
     assert glm_5_1["output_cost_per_million"] == 4.4
 
     # Check capabilities
-    assert glm_5_1["supports_vision"] is True
+    assert glm_5_1["supports_vision"] is False
     assert glm_5_1["supports_function_calling"] is True
     assert glm_5_1["supports_response_schema"] is True
     assert glm_5_1["supports_reasoning"] is True

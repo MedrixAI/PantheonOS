@@ -1,8 +1,10 @@
 from pydantic import BaseModel
 
 from pantheon.smart_func import smart_func
+from _llm_guard import requires_llm
 
 
+@requires_llm
 async def test_smart_func():
     @smart_func
     async def translate(text: str) -> str:
@@ -12,6 +14,7 @@ async def test_smart_func():
     assert res.lower() == "hello, world!"
 
 
+@requires_llm
 async def test_smart_func_with_tools():
     _city = None
 
@@ -28,6 +31,7 @@ async def test_smart_func_with_tools():
     assert _city.lower() == "palo alto"
 
 
+@requires_llm
 async def test_smart_func_structured_output():
     class Book(BaseModel):
         title: str
@@ -42,6 +46,7 @@ async def test_smart_func_structured_output():
     assert isinstance(book, Book)
 
 
+@requires_llm
 def test_smart_func_sync():
     @smart_func
     def translate(text: str) -> str:

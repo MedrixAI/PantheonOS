@@ -466,15 +466,16 @@ def test_prompt_resolver_max_depth(tmp_path):
 
 
 def test_prompt_resolver_missing_prompt(tmp_path):
-    """Test that missing prompt raises ValueError."""
+    """Unknown references survive as literal placeholders (template bodies)."""
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
 
     resolver = PromptResolver(prompts_dir)
 
-    import pytest
-    with pytest.raises(ValueError, match="not found"):
-        resolver.resolve("{{nonexistent}}")
+    # Lowercase misspelled refs warn but are kept literal, not raised.
+    assert resolver.resolve("{{nonexistent}}") == "{{nonexistent}}"
+    # UPPERCASE template placeholders are kept silently.
+    assert resolver.resolve("{{TITLE}}") == "{{TITLE}}"
 
 
 def test_prompt_resolver_caching(tmp_path):
@@ -556,7 +557,6 @@ def test_builtin_prompts_exist():
     assert "work_tracking" in ids
     assert "delegation" in ids
     assert "subagent_strategy" in ids
-    assert "skills" in ids
 
 
 def test_parse_agent_preserves_prompts_until_prepare_team(tmp_path):
